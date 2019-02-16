@@ -1,4 +1,4 @@
-function [NidaqDemod, NidaqRaw]=NidaqDemod(rawData,refData,modFreq,modAmp,TimeToZero,TaskParameters)
+function [NidaqDemod, NidaqRaw, Fbaseline]=NidaqDemod(rawData,refData,modFreq,modAmp,TimeToZero,TaskParameters)
 
 decimateFactor=TaskParameters.GUI.DecimateFactor;
 duration=TaskParameters.GUI.NidaqDuration;

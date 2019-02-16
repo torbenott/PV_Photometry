@@ -2,12 +2,17 @@
 
 %load a bpod session, ie struct SessionData
 basepath = 'C:\Data\DataPostdoc\PV-Photometry';
-animal = 'T05';
-session = 'T05_NosePoke_Feb07_2019_Session1.mat';
-OUTNAME = 'Photometry.pdf';
+animal = 'TP30';
+session = 'tp30_NosePoke_Feb15_2019_Session1.mat';
+OUTNAME = 'Photometry2.pdf';
 
 %params
 channel = 2; %1=green, 2=red
+RealignLeaving=true;
+SortByWT = true;%for leaaving plot
+SortByReward=true;%for reward plot
+minWT = 2; %look only at waiting time higher than that (for all plots)
+minRewardDelay = 1; %for average plot, consider only trials with minimum reward delay
 
 %%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%
@@ -33,7 +38,7 @@ end
 
 %assemble de-modulate df/f data for each trial, aligned to an event
 DemodPhotoData=cell(1,nTrials);
-DemodPhotoData2=cell(1,nTrials);
+DemodPhotoData0=cell(1,nTrials);
 for n = 1:nTrials
     
     data = PhotoData{n};
@@ -54,27 +59,191 @@ for n = 1:nTrials
         [currentNidaq1, rawNidaq1]=NidaqDemod(data(:,1),Mod,modFreq,modAmp,timetozero,TaskParameters);
         
         DemodPhotoData{n} = currentNidaq1;
+        
     end
     
     %leaving
-    if ~SessionData.Custom.Rewarded(n) && ~isnan(SessionData.Custom.ChoiceLeft(n))
-        
-        
-        timetozero = stateteimes.ITI(1);
+
+        if RealignLeaving
+            timetozero = 0;
+        else
+            timetozero=stateteimes.ITI(1)-TaskParameters.GUI.GracePeriod;
+        end
         Mod = Nidaq_modulation(modAmp,modFreq,TaskParameters);
         
-        [currentNidaq1, rawNidaq1]=NidaqDemod(data(:,1),Mod,modFreq,modAmp,timetozero,TaskParameters);
+        [currentNidaq1, rawNidaq1,base]=NidaqDemod(data(:,1),Mod,modFreq,modAmp,timetozero,TaskParameters);
         
-        DemodPhotoData2{n} = currentNidaq1;
-    end
+        DemodPhotoData0{n} = currentNidaq1;
+        Baseline(n) = base;
+ 
     
 end
 
-%remove empty trials
-DemodPhotoData(cellfun(@isempty,DemodPhotoData))=[];
-DemodPhotoData2(cellfun(@isempty,DemodPhotoData2))=[];
+%% determine 'leaving decision'
+if RealignLeaving
+ leaveT = 1; %minimum leaving time require to count as 'leave decision'
+ 
+wt=nan(1,nTrials);
+wt_start=nan(1,nTrials);
+time_in_next_trial=nan(1,nTrials);
+for n = 1:nTrials-1
+    
+     if ~SessionData.Custom.Rewarded(n) && ~isnan(SessionData.Custom.ChoiceLeft(n))
+         if SessionData.Custom.ChoiceLeft(n)
+             ChoicePortOut = 'Port1Out';
+             ChoicePortIn = 'Port1In';
+         else
+             ChoicePortOut = 'Port3Out';
+             ChoicePortIn = 'Port3In';
+         end
+         
+         events = SessionData.RawEvents.Trial{n}.Events;
+         
+         in =  events.(ChoicePortIn)(events.(ChoicePortIn) > events.Port2In(1));
+         if isfield(events,ChoicePortOut)
+         out =  events.(ChoicePortOut)(events.(ChoicePortOut) > events.Port2In(1));
+         else
+             out=[];
+         end
+         
 
-%prepare for plotting
+         if length(out)>1
+         diff = in(2:length(out)) - out(1:end-1);
+         %determine the first leave that was 'long' (potentially longer then
+         %the grace period)
+         ii = find(diff > leaveT,1,'first');
+         else
+             ii=[]; %only one leaving time --> have to check next trial
+         end
+        
+         if length(in) == length(out) && isempty(ii) %regular case
+         %tricky cases are trials where the last event is a poke in (given ITI>leaveT, which can be assumed,
+         %and neglecting the case where a trial is ending *during* the
+         %generaly short grace period)
+             ii = length(out);
+         end
+         
+         if ~isempty(ii)
+             finalout = out(ii);
+         else
+             
+             %check next trial
+             %careful, there might be missing events in between trial
+             %updating - we assume we don't miss too much
+             nextevents = SessionData.RawEvents.Trial{n+1}.Events;
+             if isfield(nextevents,ChoicePortIn)
+                 nextin = nextevents.(ChoicePortIn);
+                 if isfield(nextevents,'Port2In')
+                    nextin = nextevents.(ChoicePortIn)(nextevents.(ChoicePortIn) < nextevents.Port2In(1));
+                 end
+                 nextin = nextin - SessionData.TrialStartTimestamp(n) +  SessionData.TrialStartTimestamp(n+1);
+             else
+                 nextin=[];
+             end
+             if isfield(nextevents,ChoicePortOut)
+                 nextout =  nextevents.(ChoicePortOut);
+                 if isfield(nextevents,'Port2In')
+                nextout =  nextevents.(ChoicePortOut)(nextevents.(ChoicePortOut) < nextevents.Port2In(1));
+                 end
+                 nextout = nextout - SessionData.TrialStartTimestamp(n) +  SessionData.TrialStartTimestamp(n+1);
+             else
+                 nextout=[];
+             end
+             
+             if length(nextout)>length(nextin)
+                 nextin = [NaN, nextin];
+             end
+             
+             if length(nextout)>1
+             diff = nextin(2:end) - nextout(1:end-1);
+              ii = find(diff > leaveT,1,'first');
+              if isempty(ii)
+                  ii=length(nextout);
+              end
+             else
+                 ii=length(nextout);
+             end
+             
+             if ii == 0
+                 if ~isempty(out)
+                 finalout = out(end); %default, leave it at old trial
+                 else
+                     finalout=NaN;
+                 end
+             else
+                finalout = nextout(ii);
+                time_in_next_trial(n) = finalout + SessionData.TrialStartTimestamp(n) -  SessionData.TrialStartTimestamp(n+1);
+             end
+             
+         end
+         
+         %final determing waiting time
+         wt(n) = finalout-in(1);
+         wt_start(n) = in(1);
+         
+     end
+end
+
+%% align and patch together photometry data to 'leaving decision'
+DemodPhotoData2=cell(1,nTrials);
+for n = 1:nTrials-1
+    if ~isnan(wt(n))
+         tleave = wt_start(n) + wt(n); %default case
+        if ~isnan( time_in_next_trial(n))
+            %here we have to stitch together
+            tnext = time_in_next_trial(n);
+           
+             DemodPhotoData2(n) = DemodPhotoData0(n+1);
+             %exclude first data point due to acquisition start
+              DemodPhotoData2{n}(1,2)=NaN;
+              DemodPhotoData2{n}(1,3)=NaN;
+             DemodPhotoData2{n}(:,1) = DemodPhotoData2{n}(:,1)-tnext;
+             
+             %re-baseline
+             DemodPhotoData2{n}(:,3) = (DemodPhotoData2{n}(:,2)-Baseline(n))/Baseline(n);
+             
+             
+        else
+            DemodPhotoData2(n) = DemodPhotoData0(n);
+             DemodPhotoData2{n}(:,1) = DemodPhotoData2{n}(:,1)-tleave;
+        end
+    end
+end
+
+else %if not realign
+    DemodPhotoData2=DemodPhotoData0;
+    ii= ~SessionData.Custom.Rewarded & ~isnan(SessionData.Custom.ChoiceLeft);
+    DemodPhotoData2(~ii)=repmat({[]},1,sum(~ii));
+    wt=nan(1,nTrials);
+    for n =1:nTrials
+        if ii(n)
+            if SessionData.Custom.ChoiceLeft(n)
+                FeedbackPortTimes = SessionData.RawEvents.Trial{n}.States.wait_L;
+                wt(n) = FeedbackPortTimes(end,end)-FeedbackPortTimes(1,1);
+            else
+                FeedbackPortTimes = SessionData.RawEvents.Trial{n}.States.wait_R;
+                wt(n) = FeedbackPortTimes(end,end)-FeedbackPortTimes(1,1);
+            end
+        end
+    end
+end
+
+LeaveTrialIndex = 1:nTrials;
+RewardTrialIndex=1:nTrials;
+RewardDelay = SessionData.Custom.RewardDelay(1:nTrials);
+
+
+%% remove empty trials
+delI = cellfun(@isempty,DemodPhotoData);
+DemodPhotoData(delI)=[];
+RewardTrialIndex(delI)=[];
+
+delI = cellfun(@isempty,DemodPhotoData2);
+DemodPhotoData2(delI)=[];
+LeaveTrialIndex(delI)=[];
+
+
+%% prepare for plotting
 %reward
 minT = -2;
 maxT = 2;
@@ -82,7 +251,7 @@ tt = (maxT-minT)*10;
 PlotData = nan(length(DemodPhotoData),tt);
 for n = 1:length(DemodPhotoData)
     data = DemodPhotoData{n};
-    ii = find(data(:,1)>0,1,'first');
+    ii = find(data(:,1)>0,1,'first')-1;
     
     if ~isempty(ii) && ii>1
         
@@ -102,7 +271,7 @@ tt = (maxT-minT)*10;
 PlotData2 = nan(length(DemodPhotoData2),tt);
 for n = 1:length(DemodPhotoData2)
     data = DemodPhotoData2{n};
-    ii = find(data(:,1)>0,1,'first');
+    ii = find(data(:,1)>0,1,'first')-1;
     
     if ~isempty(ii) && ii>1
         
@@ -116,15 +285,30 @@ for n = 1:length(DemodPhotoData2)
     end
 end
 
-%delete trials with many NaNs
-PlotData(sum(isnan(PlotData),2)>30,:)=[];
-PlotData2(sum(isnan(PlotData2),2)>30,:)=[];
+%delete trials with many NaNs or other critera
+delI = sum(isnan(PlotData),2)>30;
+PlotData(delI,:)=[];
+RewardTrialIndex(delI)=[];
+
+delI = sum(isnan(PlotData2),2)>30 | wt(LeaveTrialIndex)'<minWT;
+PlotData2(delI,:)=[];
+LeaveTrialIndex(delI)=[];
 
 %normalize per trial
 PlotData = PlotData - repmat( nanmean(PlotData,2),1,size(PlotData,2));
 PlotData2 = PlotData2 - repmat( nanmean(PlotData2,2),1,size(PlotData2,2));
 
 time = linspace(minT,maxT,tt);
+
+%resort data?
+if SortByReward
+    [wtsort,sorti]=sort(RewardDelay(RewardTrialIndex));
+    PlotData=PlotData(sorti,:);
+end
+if SortByWT
+    [wtsort,sorti]=sort(wt(LeaveTrialIndex));
+    PlotData2=PlotData2(sorti,:);
+end
 
 %% plot
 
@@ -142,7 +326,7 @@ title(chname)
 
 subplot(3,2,5)
 
-plot(time,nanmean(PlotData),'-r')
+plot(time,nanmean(PlotData(RewardDelay(RewardTrialIndex)>minRewardDelay,:)),'-r')
 set(gca,'XTick',[-2,0,2]);
 ylabel('dF/F')
 xlabel('Time from reward (s)')
@@ -168,5 +352,16 @@ RedoTicks(gcf)
 setfontline(8,2,'Arial')
 
 if ~isempty(OUTNAME)
+    writefigs(gcf,fullfile(basepath,animal,OUTNAME))
+end
+
+%% Plot waiting time distribution
+figure('Color',[1,1,1])
+histogram(wt,50,'FaceColor',[0,0,0])
+
+ylabel('n');xlabel('Waiting time (s)')
+
+RedoTicks(gcf)
+if ~isempty(OUTNAME) && channel==1
     writefigs(gcf,fullfile(basepath,animal,OUTNAME))
 end
