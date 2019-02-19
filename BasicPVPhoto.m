@@ -2,13 +2,13 @@
 
 %load a bpod session, ie struct SessionData
 basepath = 'C:\Data\DataPostdoc\PV-Photometry';
-animal = 'TP30';
-session = 'tp30_NosePoke_Feb15_2019_Session1.mat';
+animal = 'tp30';
+session = 'TP30_NosePoke_Feb15_2019_Session1.mat';
 OUTNAME = 'Photometry2.pdf';
 
 %params
-channel = 2; %1=green, 2=red
-RealignLeaving=true;
+channel = 1; %1=green, 2=red
+RealignLeaving=false;
 SortByWT = true;%for leaaving plot
 SortByReward=true;%for reward plot
 minWT = 2; %look only at waiting time higher than that (for all plots)
@@ -39,10 +39,12 @@ end
 %assemble de-modulate df/f data for each trial, aligned to an event
 DemodPhotoData=cell(1,nTrials);
 DemodPhotoData0=cell(1,nTrials);
+RewardStart = nan(1,nTrials);
+ResponseStart = nan(1,nTrials);
 for n = 1:nTrials
     
     data = PhotoData{n};
-    stateteimes = SessionData.RawEvents.Trial{n}.States;
+    statetimes = SessionData.RawEvents.Trial{n}.States;
     % rewarded
     if SessionData.Custom.Rewarded(n)
         if   SessionData.Custom.ChoiceLeft(n)==1
@@ -53,7 +55,9 @@ for n = 1:nTrials
             DemodPhotoData{n}=nan(150,3);
         end
         
-        timetozero = stateteimes.(name)(1);
+        timetozero = statetimes.(name)(1);
+        RewardStart(n) = timetozero;
+        ResponseStart(n) = statetimes.wait_Sin(2);
         Mod = Nidaq_modulation(modAmp,modFreq,TaskParameters);
         
         [currentNidaq1, rawNidaq1]=NidaqDemod(data(:,1),Mod,modFreq,modAmp,timetozero,TaskParameters);
@@ -67,7 +71,7 @@ for n = 1:nTrials
         if RealignLeaving
             timetozero = 0;
         else
-            timetozero=stateteimes.ITI(1)-TaskParameters.GUI.GracePeriod;
+            timetozero=statetimes.ITI(1)-TaskParameters.GUI.GracePeriod;
         end
         Mod = Nidaq_modulation(modAmp,modFreq,TaskParameters);
         
@@ -294,29 +298,31 @@ delI = sum(isnan(PlotData2),2)>30 | wt(LeaveTrialIndex)'<minWT;
 PlotData2(delI,:)=[];
 LeaveTrialIndex(delI)=[];
 
-%normalize per trial
-PlotData = PlotData - repmat( nanmean(PlotData,2),1,size(PlotData,2));
-PlotData2 = PlotData2 - repmat( nanmean(PlotData2,2),1,size(PlotData2,2));
+%normalize per trial 
+baselineidx = 1:40;
+PlotData = PlotData - repmat( nanmean(PlotData(:,baselineidx),2),1,size(PlotData,2));
+PlotData2 = PlotData2 - repmat( nanmean(PlotData2(:,baselineidx),2),1,size(PlotData2,2));
 
 time = linspace(minT,maxT,tt);
 
 %resort data?
 if SortByReward
-    [wtsort,sorti]=sort(RewardDelay(RewardTrialIndex));
-    PlotData=PlotData(sorti,:);
+    [rewardsort,sortireward]=sort(RewardDelay(RewardTrialIndex));
+    PlotData=PlotData(sortireward,:);
 end
 if SortByWT
-    [wtsort,sorti]=sort(wt(LeaveTrialIndex));
-    PlotData2=PlotData2(sorti,:);
+    [wtsort,sortileave]=sort(wt(LeaveTrialIndex));
+    PlotData2=PlotData2(sortileave,:);
 end
 
 %% plot
 
-figure('Color',[1,1,1],'Position',[     680   381   660   597])
+figure('Color',[1,1,1],'Position',[      668   336   705   515])
 %reward
-subplot(3,2,[1,3])
+ax1=subplot(3,2,[1,3]); hold on
 imagesc(PlotData)
-set(gca,'XTick',[1,21,40],'XTickLabel',[-2,0,2])
+set(gca,'XTick',[1,21,40],'XTickLabel',[-2,0,2],'YLim',[0,size(PlotData,1)],'XLim',[1,size(PlotData,2)])
+ax1.YAxis.Direction='reverse';
 cc = colorbar();
 ylabel(cc,'dF/F')
 xlabel('Time from reward (s)')
@@ -324,12 +330,20 @@ ylabel('Trials')
 uicontrol('Style','text','String',strrep(session(1:end-4),'_','-'),'FontName','Arial','Position',[10,580,200,10],'BackgroundColor',[1,1,1])
 title(chname)
 
-subplot(3,2,5)
 
-plot(time,nanmean(PlotData(RewardDelay(RewardTrialIndex)>minRewardDelay,:)),'-r')
+
+
+ax2=subplot(3,2,5);
+y=nanmean(PlotData(RewardDelay(RewardTrialIndex)>minRewardDelay,:));
+plot(time,y,'-r')
 set(gca,'XTick',[-2,0,2]);
+set(gca,'YLim',[min(y)-0.1,max(y)+0.1])
 ylabel('dF/F')
 xlabel('Time from reward (s)')
+pos1 = get(ax1,'Position');
+pos=get(gca,'Position');
+set(gca,'Position',[pos(1),pos(2),pos1(3),pos(4)]);
+line([0,0],get(gca,'YLim'),'Color',[0,0,0],'LineStyle','--')
 
 %leaving
 subplot(3,2,[2,4])
@@ -340,28 +354,45 @@ ylabel(cc,'dF/F')
 xlabel('Time from leaving (s)')
 % ylabel('dF/F')
 
-
 subplot(3,2,6)
-
-plot(time,nanmean(PlotData2),'-r')
+y=nanmean(PlotData2);
+plot(time,y,'-r')
 set(gca,'XTick',[-2,0,2]);
+set(gca,'YLim',[min(y)-0.1,max(y)+0.1])
 ylabel('dF/F')
 xlabel('Time from leaving (s)')
+pos1 = get(ax1,'Position');
+pos=get(gca,'Position');
+set(gca,'Position',[pos(1),pos(2),pos1(3),pos(4)]);
+line([0,0],get(gca,'YLim'),'Color',[0,0,0],'LineStyle','--')
 
 RedoTicks(gcf)
 setfontline(8,2,'Arial')
+
+axes(ax1)
+responsealigned = ResponseStart(RewardTrialIndex) - RewardStart(RewardTrialIndex);
+responsealigned= responsealigned(sortireward);
+responsealigned_xidx = round((responsealigned+2) * 10)+1;
+responsealigned_xidx(responsealigned_xidx<=0)=NaN;
+for n =1:length(responsealigned_xidx)
+    line([responsealigned_xidx(n),responsealigned_xidx(n)],[n-1,n],'Color','k','LineWidth',0.25)
+end
+
 
 if ~isempty(OUTNAME)
     writefigs(gcf,fullfile(basepath,animal,OUTNAME))
 end
 
 %% Plot waiting time distribution
+if channel ==1
 figure('Color',[1,1,1])
 histogram(wt,50,'FaceColor',[0,0,0])
 
 ylabel('n');xlabel('Waiting time (s)')
 
 RedoTicks(gcf)
-if ~isempty(OUTNAME) && channel==1
+if ~isempty(OUTNAME)
     writefigs(gcf,fullfile(basepath,animal,OUTNAME))
 end
+end
+
