@@ -29,10 +29,12 @@ for i=1:n
         set(get(h(i),'Title'),'fontsize',fs,'fontname',fn);
         ch = get(h(i),'children');
         nch = length(ch);
+        if ~isempty(ls)
         for j=1:nch
            try set(ch(j),'linewidth',ls);
            catch error
            end
+        end
         end
     end
 end
